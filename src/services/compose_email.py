@@ -1,12 +1,12 @@
-import asyncio
 from openai import OpenAI
 from typing import Optional
 from src.core import config
 from src.models.model import MailResponse
-from src.services.redis_services import set_redis_value 
+from src.services.redis_services import set_redis_value
 
 # Initialize the OpenAI client with your API key
 client = OpenAI(api_key=config.OPENAI_KEY)
+
 
 def generate_lead_email(
     send_from: str,
@@ -15,6 +15,7 @@ def generate_lead_email(
     lead_position: str,
     property: str,
     additional_prompt: Optional[str] = None,
+    base64_string: str = "",
 ) -> MailResponse | None:
     # Construct the prompt
     prompt = f"""
@@ -37,6 +38,19 @@ def generate_lead_email(
 
     # Generate the response
     try:
+        contents = []
+        if base64_string:
+            contents.append(
+                {
+                    "type": "file",
+                    "file": {
+                        "filename": "input.pdf",
+                        "file_data": f"data:application/pdf;base64,{base64_string}",
+                    },
+                }
+            )
+
+        contents.append({"type": "text", "text": property})
         completion = client.beta.chat.completions.parse(
             model="gpt-4o-2024-08-06",
             temperature=0.2,
@@ -45,14 +59,14 @@ def generate_lead_email(
                 {"role": "system", "content": prompt},
                 {
                     "role": "user",
-                    "content": "Please provide only the subject and body of the email. No more text",
+                    "content": contents,
                 },
             ],
-            response_format=MailResponse
+            response_format=MailResponse,
         )
 
         # Try to Parse the response
         message_text = completion.choices[0].message.parsed
         return message_text
     except Exception as e:
-        asyncio.create_task(set_redis_value(f"----- Got Error while generating lead emails : {str(e)}"))
+        set_redis_value(f"----- Got Error while generating lead emails : {str(e)}")

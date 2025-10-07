@@ -1,28 +1,73 @@
-from src.core import config
+import os
+import zipfile
+from pathlib import Path
 from src.services.get_emails import main_extract_domain
-from src.services.generate_company_domains import generate_company_domains
-from src.services.compose_email import generate_lead_email
-from src.models.model import MailResponse
+from src.services.generate_company_domains import (
+    generate_company_domains,
+    generate_email_leads,
+)
 from src.services.redis_services import set_redis_value
 
 
-async def ai_analysis(property_details: str, compose_email_prompt: str, number_of_domains:int = 10):
+def folder_to_zip(folder: str | Path):
+    zip_path = os.path.join(folder, "mails.zip")
+    print(zip_path)
+    with zipfile.ZipFile(zip_path, "w") as zipf:
+        for idx, file in enumerate(os.listdir(folder)):
+            if ".md" not in file:
+                continue
+            file_path = os.path.join(
+                folder, file
+            )  # Write file with relative path (preserve folder structure)
+            zipf.write(file_path, f"mail_{idx}.md")
+
+    for file in os.listdir(folder):
+        file_path = os.path.join(folder, file)
+        os.remove(file_path) if ".md" in file_path else None
+
+
+def get_leads(
+    tasks: dict,
+    task_id: str,
+    property_details: str,
+    lead_type: str,
+    number_of_domains: int = 10,
+    base64_string: str = "",
+) -> None:
+    outputs_text = ""
     try:
-        results: list[MailResponse] = []
-        await set_redis_value("- Strating Analysis ... \n- Trying to get Company domains from provided property_details ...")
-        company_domains: list[str] = generate_company_domains(property_details, number_of_domains=number_of_domains)
-        await set_redis_value(f"- We Found {len(company_domains)} Company Domains.\n- Starting loop on them ...")
-        for i, company_domain in enumerate(company_domains):
-            await set_redis_value(f"--- Dealing with domain number {i+1} : {company_domain}. We're trying to extract emails")
-            emails = main_extract_domain(company_domain)
-            await set_redis_value(f"--- Email Extraction ended. We've got {len(emails)} emails for this domain.\n--- Extraction results : {str(emails)}\n--- Starting loop on them ...")
-            for j, email in enumerate(emails):
-                await set_redis_value(f"----- Composing Email number {j+1} with : {email} as mail receiver ...")
-                compose_email = generate_lead_email(send_from=str(config.CLIENT_EMAIL), send_to=email['email'], lead_name=f"{email['first_name']} {email['last_name']}", lead_position=email['position'], property=property_details, additional_prompt=compose_email_prompt)
-                await set_redis_value(f"----- Email Composed. Here is it : {compose_email}")
-                if compose_email:
-                    results.append(compose_email)
-            await set_redis_value(f"----- Progress : {i} / {len(company_domains)} ---> {100*i/len(company_domains)} %  -----")
-        await set_redis_value(f"----- Ending -----\n- Processing Task Ended: results {results}\n--------------- Successfully ended analysis ---------------")
+        set_redis_value(
+            "- Strating Analysis ... \n- Trying to get Company domains from provided property_details ..."
+        )
+        leads = generate_email_leads(
+            property_details,
+            number_of_domains=number_of_domains,
+            base64_string=base64_string,
+            lead_type=lead_type,
+        )
+        # company_domains: list[str] = generate_company_domains(
+        #     property_details,
+        #     number_of_domains=number_of_domains,
+        #     base64_string=base64_string,
+        # )
+        # set_redis_value(
+        #     f"- We Found {len(company_domains)} Company Domains.\n- Starting loop on them ..."
+        # )
+        # for i, company_domain in enumerate(company_domains):
+        #     emails = main_extract_domain(company_domain)
+        #     set_redis_value(
+        #         f"----- Progress : {i + 1} / {len(company_domains)} ---> {100 * (i + 1) / len(company_domains)} %  -----"
+        #     )
+        for lead in leads:
+            for key in lead.keys():
+                outputs_text += f"{key.capitalize()}: {lead[key]}\n"
+            outputs_text += "-------------\n"
+
+        tasks[task_id]["data"] = outputs_text
+        tasks[task_id]["status"] = "success"
     except Exception as e:
-        await set_redis_value(f"----- Got Error : {str(e)}\n--------------- Analysis Unfortunaltly Ended  ---------------")
+        print(f"Error - {e}")
+        set_redis_value(
+            f"----- Got Error : {str(e)}\n--------------- Analysis Unfortunately Ended  ---------------"
+        )
+        tasks[task_id]["status"] = "failed"
